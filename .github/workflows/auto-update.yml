@@ -1,9 +1,9 @@
-name: Auto Scrape VSC Highlights
+name: Auto Scrape Highlights API
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
-  workflow_dispatch:
+    - cron: '0 */3 * * *' # Tự động cập nhật mỗi 3 tiếng
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công
 
 jobs:
   scrape:
@@ -17,9 +17,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies (Stealth & Puppeteer)
-        run: npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
-
       - name: Run scraper script
         run: node scraper.js
 
@@ -28,5 +25,5 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add playlist.m3u
-          git commit -m "Auto-update playlist .m3u with Stealth" || exit 0
+          git commit -m "Auto-update playlist .m3u via ScoreBat API" || exit 0
           git push
