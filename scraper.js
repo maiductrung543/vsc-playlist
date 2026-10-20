@@ -4,99 +4,106 @@ puppeteer.use(StealthPlugin());
 const fs = require('fs');
 
 async function runScraper() {
-    console.log('Đang khởi động trình duyệt tàng hình (Stealth Mode)...');
+    console.log('Đang khởi động trình duyệt tàng hình...');
     const browser = await puppeteer.launch({
         headless: true,
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
             '--disable-gpu'
         ]
     });
     
     const page = await browser.newPage();
-    
-    // Giả lập thông tin thiết bị và User-Agent giống hệt người dùng thật trên máy tính
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1366, height: 768 });
 
-    let m3u8Set = new Set();
+    let m3u8List = [];
 
-    // Bắt mọi request mạng có chứa định dạng luồng stream
+    // Bắt tất cả các request m3u8 phát sinh từ mọi trang con
     page.on('request', req => {
-        const url = req.url();
-        if (url.includes('.m3u8') || url.includes('.ts')) {
-            console.log('Bắt được luồng stream:', url);
-            m3u8Set.add(url);
+        let url = req.url();
+        if (url.includes('.m3u8') && !m3u8List.includes(url)) {
+            console.log('Bắt được link stream:', url);
+            m3u8List.push(url);
         }
     });
 
     try {
-        console.log('Đang truy cập vsc9.vip/highlight...');
+        console.log('Đang truy cập trang chính vsc9.vip/highlight...');
         await page.goto('https://vsc9.vip/highlight', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // Mô phỏng hành vi cuộn trang xuống dưới để kích hoạt các thành phần ẩn nạp dữ liệu
-        await page.evaluate(async () => {
-            await new Promise((resolve) => {
-                let totalHeight = 0;
-                let distance = 150;
-                let timer = setInterval(() => {
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= document.body.scrollHeight || totalHeight > 4000) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 100);
-            });
-        });
+        await new Promise(r => setTimeout(r, 5000));
 
-        // Chờ thêm 8 giây để các tập lệnh video và API hoàn tất phản hồi
-        await new Promise(r => setTimeout(r, 8000));
-
-        // Quét lấy tiêu đề các trận đấu trên trang
-        const matchTitles = await page.evaluate(() => {
+        // 1. Quét tên các trận đấu hiển thị trên trang
+        let matchNames = await page.evaluate(() => {
             let titles = [];
-            const elements = document.querySelectorAll('h3, h4, .title, .match-name, a');
+            let elements = document.querySelectorAll('a, div, span, h3, h4');
             elements.forEach(el => {
-                let text = el.innerText.trim();
-                // Lọc lấy các chuỗi có định dạng tên trận đấu
-                if (text && (text.includes(' vs ') || text.includes(' - ') || text.length > 8)) {
+                let text = el.innerText ? el.innerText.trim() : '';
+                // Lọc các chuỗi có định dạng tên cặp đấu
+                if (text && text.includes(' vs ') && text.length < 80 && !titles.includes(text)) {
                     titles.push(text);
                 }
             });
-            return [...new Set(titles)];
+            return titles;
         });
 
-        console.log(`Tìm thấy ${matchTitles.length} tên trận và ${m3u8Set.size} link stream.`);
+        console.log(`Tìm thấy ${matchNames.length} tên trận đấu.`);
 
-        let m3u8List = Array.from(m3u8Set);
-        let m3uContent = '#EXTM3U\n';
+        // 2. Lấy danh sách các đường dẫn (links) của các trận đấu trên trang
+        let matchHrefs = await page.evaluate(() => {
+            let links = [];
+            let anchors = document.querySelectorAll('a');
+            anchors.forEach(a => {
+                if (a.href && (a.href.includes('highlight') || a.href.includes('match') || a.href.includes('truc-tiep')) && !links.includes(a.href)) {
+                    links.push(a.href);
+                }
+            });
+            return links;
+        });
 
-        // Lập bảng ghép nối tiêu đề và link stream
-        matchTitles.forEach((title, index) => {
-            let streamUrl = m3u8List[index] || m3u8List[0];
-            if (streamUrl) {
-                m3uContent += `#EXTINF:-1,${title}\n`;
-                m3uContent += `${streamUrl}\n`;
+        console.log(`Tìm thấy ${matchHrefs.length} đường dẫn trận đấu. Tiến hành cào sâu...`);
+
+        // 3. Tự động ghé thăm các trang trận đấu để kích hoạt link m3u8 load ngầm
+        for (let i = 0; i < Math.min(matchHrefs.length, 8); i++) {
+            try {
+                let subPage = await browser.newPage();
+                await subPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+                
+                subPage.on('request', req => {
+                    let url = req.url();
+                    if (url.includes('.m3u8') && !m3u8List.includes(url)) {
+                        m3u8List.push(url);
+                    }
+                });
+
+                console.log(`Đang mở link chi tiết [${i+1}]: ${matchHrefs[i]}`);
+                await subPage.goto(matchHrefs[i], { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 4000)); // Chờ player load stream
+                await subPage.close();
+            } catch (err) {
+                console.log('Lỗi khi mở trang con:', err.message);
             }
-        });
+        }
 
-        // Fallback: Nếu không bắt được tên nhưng có link stream m3u8
-        if (m3u8List.length > 0 && matchTitles.length === 0) {
-            m3u8List.forEach((url, i) => {
-                m3uContent += `#EXTINF:-1,Highlight Match ${i + 1}\n`;
+        console.log(`Tổng hợp: Bắt được ${m3u8List.length} link m3u8.`);
+
+        // 4. Tạo file playlist.m3u hoàn chỉnh
+        let m3uContent = '#EXTM3U\n';
+        if (m3u8List.length > 0) {
+            m3u8List.forEach((url, index) => {
+                let name = matchNames[index] || `Highlight Trận ${index + 1}`;
+                m3uContent += `#EXTINF:-1,${name.replace(/\n/g, ' - ')}\n`;
                 m3uContent += `${url}\n`;
             });
         }
 
         fs.writeFileSync('playlist.m3u', m3uContent, 'utf-8');
-        console.log('Đã tạo xong file playlist.m3u thành công!');
+        console.log('Đã ghi file playlist.m3u thành công!');
 
     } catch (err) {
-        console.error('Lỗi thực thi:', err);
+        console.error('Lỗi thực thi script:', err);
     } finally {
         await browser.close();
     }
